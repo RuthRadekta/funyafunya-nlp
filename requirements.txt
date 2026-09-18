@@ -1,0 +1,21 @@
+# Web App & UI
+streamlit
+streamlit-option-menu # Untuk membuat custom menu di sidebar
+streamlit-extras # Tambahan fungsionalitas UI ringan
+=> pip install streamlit
+=> streamlit run app.py
+
+# Database
+mysql-connector-python
+SQLAlchemy
+pandas
+=> pip install mysql-connector-python sqlalchemy pandas
+
+# NLP & Machine Learning (Model Lokal)
+scikit-learn
+bertopic # Untuk Topic Modelling
+nltk
+spacy
+
+# LLM APIs
+openai # Atau google-generativeai jika menggunakan Gemini
