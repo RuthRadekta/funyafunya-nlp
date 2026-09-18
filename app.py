@@ -1,11 +1,13 @@
 from database.db_connection import fetch_projects
 from projects.topic_modelling import run_bertopic, run_lda
+from database.db_connection import fetch_projects, init_db
 
 import streamlit as st
 import pandas as pd
 
 # Konfigurasi dasar halaman (harus di baris pertama)
 st.set_page_config(page_title="Funyafunya NLP", page_icon="🐱", layout="wide")
+init_db()
 
 # ==========================================
 # 1. STATE MANAGEMENT (Fungsi Navigasi)
