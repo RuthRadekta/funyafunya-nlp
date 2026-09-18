@@ -1,6 +1,8 @@
 from database.db_connection import fetch_projects
 from projects.topic_modelling import run_bertopic, run_lda
 from database.db_connection import fetch_projects, init_db
+from projects.text_preprocessing import clean_text
+from projects.sentiment_analysis import run_local_sentiment, run_api_sentiment
 
 import streamlit as st
 import pandas as pd
@@ -179,12 +181,29 @@ def render_project_page():
     
     with left_col:
         st.markdown("##### ⚙️ Konfigurasi Model")
-        model_choice = st.selectbox("Jenis Model", ["BERTopic (Local)", "LDA (Local)", "GPT-4 (API)", "Gemini (API)"])
+        model_choice = st.selectbox("Jenis Model", ["BERTopic (Local)", "LDA (Local)", "RoBERTa (Local)", "GPT-4 (API)", "Gemini (API)"])
         
+        # ==========================================
+        # 1. UI KHUSUS PER PROYEK (Hanya memunculkan widget/input)
+        # ==========================================
+        if st.session_state.active_project == 'Topic Modelling':
+            st.markdown("##### 🎛️ Hyperparameters")
+            st.session_state.num_topics = st.slider("Jumlah Topik (K)", 2, 30, 5)
+            st.session_state.random_seed = st.number_input("Random Seed", 0, 9999, 42)
+            st.session_state.apply_cleaning = st.checkbox("Terapkan Text Cleaning", value=True)
+            
+        elif st.session_state.active_project == 'Sentiment Analysis':
+            st.markdown("##### 🔑 Konfigurasi LLM")
+            if "API" in model_choice:
+                st.session_state.api_key = st.text_input("Masukkan API Key", type="password")
+            else:
+                st.info("💡 Anda menggunakan model Lokal. Tidak perlu API Key.")
+
+        # ==========================================
+        # 2. INPUT DATA UMUM (Harus di luar if-elif agar muncul di semua proyek)
+        # ==========================================
         st.markdown("---")
-        
         st.markdown("##### 📂 Input Data")
-        # 1. Menambahkan widget file uploader dengan filter khusus file CSV
         uploaded_file = st.file_uploader("Upload dataset CSV", type=["csv"])
         text_input = st.text_area("Atau masukkan teks secara manual:")
         
@@ -194,79 +213,146 @@ def render_project_page():
     with right_col:
         st.title(f"{st.session_state.active_project}")
         
-        # 2. Logika untuk memproses file yang diunggah
-        df = None # Inisialisasi variabel df (DataFrame)
-        
+        # ==========================================
+        # 3. PREVIEW DATA (Berlaku untuk semua proyek)
+        # ==========================================
+        df = None
         if uploaded_file is not None:
-            try:
-                # Membaca file CSV yang disimpan sementara di memori Streamlit
-                df = pd.read_csv(uploaded_file)
-                
-                st.success(f"Berhasil memuat: {uploaded_file.name}")
-                st.markdown("##### Preview Dataset (5 Baris Pertama)")
-                # Menampilkan DataFrame di UI secara interaktif
-                st.dataframe(df.head(), use_container_width=True)
-                
-                # Opsi tambahan: Meminta user memilih kolom mana yang berisi teks untuk di-NLP-kan
-                st.session_state.target_columns = st.multiselect(
-                    "Pilih kolom teks yang akan dianalisis (bisa lebih dari satu):", 
-                    options=df.columns,
-                    default=[df.columns[0]] # Otomatis memilih kolom pertama sebagai default
-                )
-                
-            except Exception as e:
-                st.error(f"Gagal membaca file CSV. Pastikan formatnya benar. Detail error: {e}")
-
+            df = pd.read_csv(uploaded_file)
+            st.success(f"Berhasil memuat: {uploaded_file.name}")
+            st.dataframe(df.head(), use_container_width=True)
+            st.session_state.target_columns = st.multiselect("Pilih kolom teks:", df.columns, default=[df.columns[0]])
+            
         st.markdown("---")
         st.markdown("### Hasil Eksekusi")
         
-        # Logika ketika tombol Run ditekan
+        # ==========================================
+        # 4. EKSEKUSI MODEL (Berjalan HANYA jika tombol ditekan)
+        # ==========================================
         if run_button:
             if uploaded_file is None and text_input == "":
                 st.warning("⚠️ Mohon upload dataset atau masukkan teks terlebih dahulu!")
             else:
                 with st.spinner(f'Memproses data menggunakan {model_choice}...'):
-                    
-                    # Eksekusi khusus jika proyek yang aktif adalah Topic Modelling
+
+                    # ---- CABANG LOGIKA EKSEKUSI PROYEK ----
                     if st.session_state.active_project == 'Topic Modelling':
-                        if df is not None:
-                            # Cek apakah user sudah memilih minimal 1 kolom
-                            if len(st.session_state.target_columns) == 0:
-                                st.error("⚠️ Silakan pilih minimal satu kolom teks untuk dianalisis!")
-                            else:
-                                # Menggabungkan teks dari kolom yang dipilih dengan spasi antar teks
-                                combined_text = df[st.session_state.target_columns].astype(str).agg(' '.join, axis=1)
-                                
-                                # Hilangkan baris kosong dan konversi ke list
-                                docs = combined_text.dropna().tolist()
+                        if df is not None and len(st.session_state.target_columns) > 0:
+                            # 1. Gabungkan kolom ke dalam Pandas Series
+                            combined_series = df[st.session_state.target_columns].astype(str).agg(' '.join, axis=1)
                             
-                            # Cek model apa yang dipilih di dropdown UI
+                            # 2. Proses Cleaning langsung di dalam Series
+                            if st.session_state.apply_cleaning:
+                                with st.spinner('Membersihkan teks (Hapus URL, Tanda Baca, & Stopwords)...'):
+                                    # apply() akan menjalankan fungsi clean_text ke setiap baris
+                                    cleaned_series = combined_series.apply(clean_text)
+                            else:
+                                cleaned_series = combined_series
+                                
+                            # 3. Buat "Mask" untuk mendeteksi baris mana yang tidak kosong
+                            valid_mask = cleaned_series.str.strip() != ""
+                            
+                            # 4. Ambil teks yang valid saja sebagai list untuk dimasukkan ke model
+                            docs = cleaned_series[valid_mask].tolist()
+                            
+                            if len(docs) == 0:
+                                st.error("Semua teks menjadi kosong setelah di-preprocessing. Coba nonaktifkan opsi Text Cleaning.")
+                                st.stop()
+                            
+                            # Cek model yang dipilih
                             if "BERTopic" in model_choice:
-                                result = run_bertopic(docs)
+                                st.info(f"Menjalankan BERTopic dengan K={st.session_state.num_topics} dan Seed={st.session_state.random_seed}")
+                                # Mengirim argumen dari UI ke script
+                                result = run_bertopic(
+                                    docs, 
+                                    n_topics=st.session_state.num_topics, 
+                                    seed=st.session_state.random_seed
+                                )
                                 
                                 if result["status"] == "success":
                                     st.success("Proses BERTopic selesai!")
+                                    st.dataframe(result["info_df"], use_container_width=True)
+                                    st.plotly_chart(result["figure"], use_container_width=True)
+                                else:
+                                    st.error(f"Error: {result['message']}")
+                                    
+                            elif "LDA" in model_choice:
+                                st.info(f"Menjalankan LDA dengan K={st.session_state.num_topics} dan Seed={st.session_state.random_seed}")
+                                # Mengirim argumen dari UI ke script
+                                result = run_lda(
+                                    docs, 
+                                    n_topics=st.session_state.num_topics, 
+                                    seed=st.session_state.random_seed
+                                )
+                                
+                                if result["status"] == "success":
+                                    st.success(f"Proses {model_choice} selesai!")
+                                    
+                                    # 1. Menampilkan Metrik Evaluasi dengan st.metric
+                                    st.markdown("#### 📊 Metrik Evaluasi")
+                                    col_m1, col_m2 = st.columns(2)
+                                    with col_m1:
+                                        # NPMI biasanya berkisar -1 hingga 1. 
+                                        st.metric(label="NPMI (Coherence)", value=f"{result['metrics']['npmi']:.4f}")
+                                    with col_m2:
+                                        st.metric(label="Topic Diversity", value=f"{result['metrics']['diversity']:.4f}")
+                                    
+                                    # 2. Menampilkan Tabel dan Grafik
                                     st.markdown("#### Detail Topik")
                                     st.dataframe(result["info_df"], use_container_width=True)
                                     
-                                    st.markdown("#### Visualisasi Topik")
-                                    st.plotly_chart(result["figure"], use_container_width=True)
-                                else:
-                                    st.error(f"Terjadi kesalahan saat memproses BERTopic: {result['message']}")
+                                    if "figure" in result:
+                                        st.plotly_chart(result["figure"], use_container_width=True)
                                     
-                            elif "LDA" in model_choice:
-                                result = run_lda(docs, n_topics=5)
-                                
-                                if result["status"] == "success":
-                                    st.success("Proses LDA selesai!")
-                                    st.markdown("#### Top Words per Topic")
-                                    st.dataframe(result["info_df"], use_container_width=True)
+                                    # 3. Fitur Download CSV (Menggabungkan topik ke dataframe asli)
+                                    st.markdown("---")
+                                    st.markdown("#### 💾 Ekspor Hasil")
+                                    
+                                    # Cek apakah panjang dokumen setelah cleaning sama dengan df asli 
+                                    # (Jika Anda mendrop baris kosong di proses sebelumnya, lakukan filter df agar selaras)
+                                    # Untuk penyederhanaan, kita asumsikan jumlah baris sama.
+                                    df_result = df.copy()
+                                    # Mengambil jumlah topik sebanyak dokumen yang diproses
+                                    df_result['Assigned_Topic'] = -1
+                                    # df_result['Assigned_Topic'] = result["assigned_topics"]
+                                    df_result.loc[valid_mask, 'Assigned_Topic'] = result["assigned_topics"]
+                                    
+                                    # Konversi DataFrame ke format CSV
+                                    csv_data = df_result.to_csv(index=False).encode('utf-8')
+                                    
+                                    st.download_button(
+                                        label="📥 Download Dataset + Prediksi Topik (CSV)",
+                                        data=csv_data,
+                                        file_name=f"topic_modelling_result_{model_choice}.csv",
+                                        mime="text/csv",
+                                        use_container_width=True
+                                    )
                                 else:
-                                    st.error(f"Terjadi kesalahan saat memproses LDA: {result['message']}")
+                                    st.error(f"Error: {result['message']}")
 
-                    # elif st.session_state.active_project == 'Sentiment Analysis':
-                    #     ...
-
+                    # --- Sentiment Analysis Logic ---
+                    elif st.session_state.active_project == 'Sentiment Analysis':
+                        if df is not None and len(st.session_state.target_columns) > 0:
+                            combined_series = df[st.session_state.target_columns].astype(str).agg(' '.join, axis=1)
+                            valid_mask = combined_series.str.strip() != ""
+                            docs = combined_series[valid_mask].tolist()
+                            
+                            if "Local" in model_choice:
+                                result = run_local_sentiment(docs)
+                            else:
+                                result = run_api_sentiment(docs, model_choice, st.session_state.get('api_key', ''))
+                                
+                            if result["status"] == "success":
+                                st.success("Analisis Sentimen selesai!")
+                                st.plotly_chart(result["figure"], use_container_width=True)
+                                
+                                df_result = df.copy()
+                                df_result['Sentiment_Label'] = "Unknown"
+                                df_result.loc[valid_mask, 'Sentiment_Label'] = result["labels"]
+                                
+                                st.dataframe(df_result, use_container_width=True)
+                            else:
+                                st.error(result["message"])
 # ==========================================
 # 4. MAIN ROUTER
 # ==========================================

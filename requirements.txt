@@ -16,6 +16,8 @@ scikit-learn
 bertopic # Untuk Topic Modelling
 nltk
 spacy
+=> pip install gensim sentence-transformers
+=> pip install transformers torch plotly
 
 # LLM APIs
 openai # Atau google-generativeai jika menggunakan Gemini
